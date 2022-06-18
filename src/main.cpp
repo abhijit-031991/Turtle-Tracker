@@ -11,6 +11,7 @@
 #include <SoftwareSerial.h>
 #include <MPR121.h>
 #include <SFE_BMP180.h>
+#include <SparkFunLIS3DH.h>
 
 ///// LIBRARY DECLARATIONS /////
 TinyGPSPlus gps;
@@ -18,6 +19,7 @@ SPIFlash flash(1);
 elapsedMillis mTime;
 SoftwareSerial gps_serial(19,20);
 SFE_BMP180 bmp;
+LIS3DH imu(I2C_MODE, 0x19);
 
 ///// PIN DEFINITIONS /////
 #define GPS_PIN A0
@@ -109,6 +111,14 @@ void getMeta(){
         }
       }
     }
+
+    Serial.print("\nAccelerometer:\n");
+    Serial.print(" X = ");
+    Serial.println(imu.readFloatAccelX(), 4);
+    Serial.print(" Y = ");
+    Serial.println(imu.readFloatAccelY(), 4);
+    Serial.print(" Z = ");
+    Serial.println(imu.readFloatAccelZ(), 4);
   
 
 }
@@ -641,6 +651,14 @@ void setup(){
 
   bmp.begin();
 
+  
+  imu.settings.accelSampleRate = 1;
+  imu.settings.accelRange = 4;
+  imu.settings.xAccelEnabled = 1;
+  imu.settings.yAccelEnabled = 1;
+  imu.settings.zAccelEnabled = 1;
+  imu.begin();
+
   // Begin LoRa Radio//
   LoRa.setPins(LCS, LRST, LDIO);
   if(!LoRa.begin(867E6)){
@@ -695,6 +713,5 @@ void setup(){
 }
 
 void loop(){
-  
 }
 
