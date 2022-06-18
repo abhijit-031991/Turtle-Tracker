@@ -9,12 +9,15 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <SoftwareSerial.h>
+#include <MPR121.h>
+#include <SFE_BMP180.h>
 
 ///// LIBRARY DECLARATIONS /////
 TinyGPSPlus gps;
 SPIFlash flash(1);
 elapsedMillis mTime;
 SoftwareSerial gps_serial(19,20);
+SFE_BMP180 bmp;
 
 ///// PIN DEFINITIONS /////
 #define GPS_PIN A0
@@ -36,38 +39,22 @@ const uint8_t devType = 107;
 uint32_t wAdd = 0;                // Write Address Parameter
 uint32_t rAdd = 0;                // Read Address Parameter
 
+// MPR Variables //
+const uint8_t MPR121_ADDR = 0x5A;
+const uint8_t MPR121_INT = 2;
+uint8_t touch_trsh = 40;          // Touch Threshold *** USER CONFIG ***
+uint8_t release_trsh = 20;        // Release Threshold *** USER CONFIG ***
 
 // Device Variables //
-uint16_t cnt;                     // No. of data points available for download
-
-// Time Variable //
-time_t strtTime = 1640841540;     // Device Time Set During Start Up
-time_t pingTime;                  // Ping Alram set in code
-time_t gpsTime;                   // GPS Alarm Set in code
-time_t PingAlarmTime = 1640841600;             // Stores scheduled ping time in scheduled mode *** USER CONFIG *** x
-
-// Volatile Variables //
-volatile bool Alarm_Trig = false; // Alarm 1
-volatile bool trigger = false;    // Activity Trigger
+uint16_t cnt;
 
 // Other Variables //
-bool wipe = true;                // Enable/Disable wiping of Flash Memory *** USER CONFIG *** x
-bool act_mode = false;             // Activty Mode Parameter
-bool scheduled = false;            // Enable or diable schedule mode *** USER CONFIG *** x
-bool window = false;              // Schedule window on/off parameter
-bool activity_enabled = false;     // Enable/Disable Activity mode *** USER CONFIG *** x
-
-// Accelerometer Variables //
-int act_treshold = 120;            // Activity threshold 0-255 *** USER CONFIG *** 
-int act_gpsFrequency = 15;         // Activity mode GPS Frequency *** USER CONFIG ***
-int act_duration = 60;             // Activity mode duration in minutes *** USER CONFIG ***
-time_t act_start;                 // activity mode start time
-time_t act_end;                   // activity mode end time
+bool wipe = true;
 
 // GPS Control Variables //
 int gpsFrequency = 60;            // GPS Frequency in minutes *** USER CONFIG ***
 int gpsTimeout = 60;              // GPS Timesout after 'x' seconds *** USER CONFIG ***
-int gpsHdop = 5;                  // GPS HODP Parameter *** USER CONFIG ***
+int gpsHdop = 5;
 
 // GPS Storage Variables //
 float lat;                        // Storing last known Latitude
@@ -76,14 +63,55 @@ float lng;                        // Storign last known Longitude
 // Radio Variables //
 int radioFrequency = 1;           //Frequency of Pings in minutes *** USER CONFIG ***
 int rcv_duration = 5;             // Receive Window Duration in seconds *** USER CONFIG ***
-time_t sch_start;                 // Last Schedule Start Time 
-time_t sch_end;                   // Last Schedule End Time
-int sch_duration = 5;             // Schedule Window Duration in mins *** USER CONFIG ***
-int sch_rpt_duration = 10;         // Schedule repeat time in days *** USER CONFIG ***
+
+// Other Variables //
+
+bool isrt = false;
+
 
 //...................................//
 //           FUNCTIONS               //
 //...................................//
+
+void selfTest(){  
+
+}
+
+void isr(){
+  isrt = true;
+  noInterrupts();
+
+}
+
+void getMeta(){
+  char status;
+  double T;
+  double P;
+  status = bmp.getTemperature(T);
+    if (status != 0)
+    {
+      // Print out the measurement:
+      Serial.print(F("temperature: "));
+      Serial.print(T,2);
+      Serial.println(F(" deg C, "));
+      status = bmp.startPressure(1);
+      if (status != 0)
+      {
+        // Wait for the measurement to complete:
+        delay(status);
+        status = bmp.getPressure(P,T);
+        if (status != 0)
+        {
+          // Print out the measurement:
+          Serial.print(F("absolute pressure: "));
+          Serial.print(P,2);
+          Serial.println(F(" mb"));
+        }
+      }
+    }
+  
+
+}
 
 void activationPing(){
 
@@ -174,8 +202,6 @@ void activationPing(){
     {
       setTime(gps.time.hour(),gps.time.minute(),gps.time.second(),gps.date.day(),gps.date.month(),gps.date.year());
       time_t n = now();
-      strtTime = n;
-      Serial.print(F("START TIME")); Serial.println(strtTime);
     }
     
     digitalWrite(GPS_PIN, LOW);
@@ -232,8 +258,6 @@ void activationPing(){
     {
       setTime(gps.time.hour(),gps.time.minute(),gps.time.second(),gps.date.day(),gps.date.month(),gps.date.year());
       time_t n = now();
-      strtTime = n;
-      Serial.print(F("START TIME")); Serial.println(strtTime);
     }
     digitalWrite(GPS_PIN, LOW);
 
@@ -279,18 +303,6 @@ void activationPing(){
     Serial.println(F("Reset"));
   }
     
-}
-
-void isr(){
-  trigger = true;
-  noInterrupts();
-  noSleep();
-}
-
-void risr(){
-  Alarm_Trig = true;
-  noInterrupts();
-  noSleep();
 }
 
 void recGPS(){
@@ -353,11 +365,11 @@ void recGPS(){
     dat.datetime = (uint32_t)now();
     dat.locktime = mTime/1000;
     dat.hdop = gps.hdop.hdop();
-    if(act_mode == true){
-      dat.act = true;
-    }else{
-      dat.act = false;
-    }
+    // if(act_mode == true){
+    //   dat.act = true;
+    // }else{
+    //   dat.act = false;
+    // }
     Serial.println(dat.datetime);
     Serial.println(dat.lat);
     Serial.println(dat.lng);
@@ -527,19 +539,19 @@ void receive(unsigned int time){
         LoRa.readBytes((uint8_t*)&set, sizeof(set));
       }
 
-      PingAlarmTime = set.pingTime;
-      act_treshold = set.act_trsh;
-      act_gpsFrequency = set.act_gps_frq;
-      act_duration = set.act_duration;
+      // PingAlarmTime = set.pingTime;
+      // act_treshold = set.act_trsh;
+      // act_gpsFrequency = set.act_gps_frq;
+      // act_duration = set.act_duration;
       gpsFrequency = set.gpsFrq;
       gpsTimeout = set.gpsTout;
       gpsHdop = set.hdop;
       radioFrequency = set.radioFrq;
       rcv_duration = set.rcv_dur;
-      sch_duration = set.sch_dur;
-      sch_rpt_duration = set.sch_rpt_dur;
-      activity_enabled = set.act_enabled;
-      scheduled = set.sch_enabled;
+      // sch_duration = set.sch_dur;
+      // sch_rpt_duration = set.sch_rpt_dur;
+      // activity_enabled = set.act_enabled;
+      // scheduled = set.sch_enabled;
 
       Serial.println(set.pingTime);
       Serial.println(set.act_trsh);
@@ -555,7 +567,7 @@ void receive(unsigned int time){
       Serial.println(set.act_enabled);
       Serial.println(set.sch_enabled);
       delay(100);
-      
+
       struct resp{
         uint16_t tag;
         byte res;
@@ -574,8 +586,7 @@ void receive(unsigned int time){
   delay(50);
 }
 
-void setup() {
-  // put your setup code here, to run once:
+void setup(){
 
   enablePower(POWER_ADC);
   enablePower(POWER_SERIAL0);
@@ -594,6 +605,42 @@ void setup() {
 
   Serial.println(F("SYSTEM INIT..."));
 
+  if (!MPR121.begin(MPR121_ADDR)) {
+    Serial.println("error setting up MPR121");
+    switch (MPR121.getError()) {
+      case NO_ERROR:
+        Serial.println("no error");
+        break;
+      case ADDRESS_UNKNOWN:
+        Serial.println("incorrect address");
+        break;
+      case READBACK_FAIL:
+        Serial.println("readback failure");
+        break;
+      case OVERCURRENT_FLAG:
+        Serial.println("overcurrent on REXT pin");
+        break;
+      case OUT_OF_RANGE:
+        Serial.println("electrode out of range");
+        break;
+      case NOT_INITED:
+        Serial.println("not initialised");
+        break;
+      default:
+        Serial.println("unknown error");
+        break;
+    }
+    while (1);
+  }
+  MPR121.setInterruptPin(MPR121_INT);
+  MPR121.setSamplePeriod(SAMPLE_INTERVAL_32MS);
+
+  MPR121.setTouchThreshold(touch_trsh);
+  MPR121.setReleaseThreshold(release_trsh);
+  MPR121.autoSetElectrodes();
+
+  bmp.begin();
+
   // Begin LoRa Radio//
   LoRa.setPins(LCS, LRST, LDIO);
   if(!LoRa.begin(867E6)){
@@ -605,86 +652,49 @@ void setup() {
   LoRa.sleep();
 
   // Activation Ping //
-  activationPing();
+  // activationPing();
 
   // Enable & Start Flash //
   
-  if(flash.powerUp()){
-    Serial.println(F("Powered Up1"));
-  }
-  if(!flash.begin()){
-    Serial.println(F("Flash again"));
-    Serial.println(flash.error(VERBOSE));
-  } 
-  Serial.println(flash.getManID());
-  if(flash.powerUp()){
-    Serial.println(F("Powered Up"));
-  }else
-  {
-    Serial.println(F("PWR UP Failed!"));
-  }
-  if (wipe == true)
-  {
-    Serial.println(F("WIPING FLASH"));
-    if(flash.eraseChip()){
-    Serial.println(F("Memory Wiped"));  
-    }else
-    {
-      Serial.println(flash.error(VERBOSE));
-    }
-  }else{
-    rAdd = flash.getAddress(16);
-  }    
-  if(flash.powerDown()){
-    Serial.println("Powered Down");
-    digitalWrite(1, HIGH);
-  }else{
-    Serial.println(flash.error(VERBOSE));
-  }
+  // if(flash.powerUp()){
+  //   Serial.println(F("Powered Up1"));
+  // }
+  // if(!flash.begin()){
+  //   Serial.println(F("Flash again"));
+  //   Serial.println(flash.error(VERBOSE));
+  // } 
+  // Serial.println(flash.getManID());
+  // if(flash.powerUp()){
+  //   Serial.println(F("Powered Up"));
+  // }else
+  // {
+  //   Serial.println(F("PWR UP Failed!"));
+  // }
+  // if (wipe == true)
+  // {
+  //   Serial.println(F("WIPING FLASH"));
+  //   if(flash.eraseChip()){
+  //   Serial.println(F("Memory Wiped"));  
+  //   }else
+  //   {
+  //     Serial.println(flash.error(VERBOSE));
+  //   }
+  // }else{
+  //   rAdd = flash.getAddress(16);
+  // }    
+  // if(flash.powerDown()){
+  //   Serial.println("Powered Down");
+  //   digitalWrite(1, HIGH);
+  // }else{
+  //   Serial.println(flash.error(VERBOSE));
+  // }
 
-  // Set Up Accelerometer //
-  
-  // Set Up MPR121
-  
   // // Attach Interupt //
-  attachInterrupt(digitalPinToInterrupt(AINT), isr, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(RINT), risr, CHANGE);
-
-  Serial.println(F("SYSTEM READY"));
-  delay(100);
-  disablePower(POWER_ADC);
-  disablePower(POWER_SERIAL0);
-  disablePower(POWER_SERIAL1);
-  disablePower(POWER_SPI);
-  disablePower(POWER_WIRE); 
-  
-  sleepMode(SLEEP_POWER_DOWN);
-  sleep();
+  attachInterrupt(digitalPinToInterrupt(RINT), isr, CHANGE);
 
 }
 
-void loop() {
-  // put your main code here, to run repeatedly:
-
-  enablePower(POWER_ADC);
-  enablePower(POWER_SERIAL0);
-  enablePower(POWER_SERIAL1);
-  enablePower(POWER_SPI);
-  enablePower(POWER_WIRE);
-
-  Serial.println(F("AWAKE"));
+void loop(){
   
-  
-  Serial.println(F("SLEEPING..."));
-  delay(50); 
-  disablePower(POWER_ADC);
-  disablePower(POWER_SERIAL0);
-  disablePower(POWER_SERIAL1);
-  disablePower(POWER_SPI);
-  disablePower(POWER_WIRE); 
-
-  sleepMode(SLEEP_POWER_DOWN);
-  sleep();
 }
-
 
