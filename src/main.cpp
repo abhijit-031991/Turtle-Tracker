@@ -12,6 +12,7 @@
 #include <MPR121.h>
 #include <SFE_BMP180.h>
 #include <SparkFunLIS3DH.h>
+#include <Sleep_n0m1.h>
 
 ///// LIBRARY DECLARATIONS /////
 TinyGPSPlus gps;
@@ -20,6 +21,7 @@ elapsedMillis mTime;
 SoftwareSerial gps_serial(19,20);
 SFE_BMP180 bmp;
 LIS3DH imu(I2C_MODE, 0x19);
+Sleep slp;
 
 ///// PIN DEFINITIONS /////
 #define GPS_PIN A0
@@ -32,8 +34,8 @@ const int PROGMEM LDIO = 0;
 
 ///// DEVICE DEFINITIONS /////
 
-const uint16_t tag = 11111;
-const uint8_t devType = 107;
+const uint16_t tag = 10003;
+const uint8_t devType = 105;
 
 ///// VARIABLES /////
 
@@ -44,8 +46,8 @@ uint32_t rAdd = 0;                // Read Address Parameter
 // MPR Variables //
 const uint8_t MPR121_ADDR = 0x5A;
 const uint8_t MPR121_INT = 2;
-uint8_t touch_trsh = 40;          // Touch Threshold *** USER CONFIG ***
-uint8_t release_trsh = 20;        // Release Threshold *** USER CONFIG ***
+uint8_t touch_trsh = 75;          // Touch Threshold *** USER CONFIG ***
+uint8_t release_trsh = 70;        // Release Threshold *** USER CONFIG ***
 
 // Device Variables //
 uint16_t cnt;
@@ -54,9 +56,12 @@ uint16_t cnt;
 bool wipe = true;
 
 // GPS Control Variables //
-int gpsFrequency = 60;            // GPS Frequency in minutes *** USER CONFIG ***
+int gpsMinFrequency = 10;            // GPS Frequency in minutes *** USER CONFIG ***
 int gpsTimeout = 60;              // GPS Timesout after 'x' seconds *** USER CONFIG ***
 int gpsHdop = 5;
+bool gpsFlag = false;
+int currentCycle;
+int targetCycle;
 
 // GPS Storage Variables //
 float lat;                        // Storing last known Latitude
@@ -66,36 +71,110 @@ float lng;                        // Storign last known Longitude
 int radioFrequency = 1;           //Frequency of Pings in minutes *** USER CONFIG ***
 int rcv_duration = 5;             // Receive Window Duration in seconds *** USER CONFIG ***
 
+// meta Variables //
+double T;
+double P;
+float x;
+float y;
+float z;
+
 // Other Variables //
-
 bool isrt = false;
+unsigned long mil;
 
+// Electrode Status //
+bool E1 = true;
+bool E2 = true;
+bool E3 = true;
+bool E4 = true;
+bool surface = false;
+
+// Time Variables //
+time_t mainTime;
 
 //...................................//
 //           FUNCTIONS               //
 //...................................//
 
-void selfTest(){  
-
-}
 
 void isr(){
+
+  noSleep();
   isrt = true;
   noInterrupts();
 
 }
 
+void checkElectrodes(){
+  MPR121.updateAll();
+    Serial.println(F("Event"));
+    for (int i = 0; i < 12; i++) {
+      if (MPR121.isNewTouch(i)) {
+        Serial.print("E");
+        Serial.print(i, DEC);
+        Serial.println("+");
+        if (i == 2)
+        {
+          E1 = true;
+        }
+        if (i == 4)
+        {
+          E2 = true;
+        }
+        if (i == 6)
+        {
+          E3 = true;
+        }
+        if (i == 10)
+        {
+          E4 = true;
+        }        
+      } else if (MPR121.isNewRelease(i)) {
+        Serial.print("E");
+        Serial.print(i, DEC);
+        Serial.println("-");
+        if (i == 2)
+        {
+          E1 = false;
+        }
+        if (i == 4)
+        {
+          E2 = false;
+        }
+        if (i == 6)
+        {
+          E3 = false;
+        }
+        if (i == 10)
+        {
+          E4 = false;
+        }
+      }
+    }
+    if (E1 == true && E2 == true && E3 == true && E4 == true)
+    {
+      surface = false;
+    }
+    if (E1 == false || E2 == false || E3 == false || E4 == false)
+    {
+      surface = true;
+    }
+    Serial.print(F("S:")); Serial.println(surface);
+    delay(100);
+}
+
 void getMeta(){
+
   char status;
-  double T;
-  double P;
+  
+  status = bmp.startTemperature();
   status = bmp.getTemperature(T);
     if (status != 0)
     {
       // Print out the measurement:
       Serial.print(F("temperature: "));
       Serial.print(T,2);
-      Serial.println(F(" deg C, "));
+      Serial.println(F(" deg C"));
       status = bmp.startPressure(1);
       if (status != 0)
       {
@@ -115,11 +194,13 @@ void getMeta(){
     Serial.print("\nAccelerometer:\n");
     Serial.print(" X = ");
     Serial.println(imu.readFloatAccelX(), 4);
+    x = imu.readFloatAccelX();
     Serial.print(" Y = ");
     Serial.println(imu.readFloatAccelY(), 4);
+    y = imu.readFloatAccelY();
     Serial.print(" Z = ");
     Serial.println(imu.readFloatAccelZ(), 4);
-  
+    z = imu.readFloatAccelZ();
 
 }
 
@@ -211,7 +292,7 @@ void activationPing(){
     if (gps.time.isValid())
     {
       setTime(gps.time.hour(),gps.time.minute(),gps.time.second(),gps.date.day(),gps.date.month(),gps.date.year());
-      time_t n = now();
+      mainTime = now();
     }
     
     digitalWrite(GPS_PIN, LOW);
@@ -234,6 +315,8 @@ void activationPing(){
     Serial.println(EEPROM.read(1));
      /// Begin GPS and Acquire Lock ////
     digitalWrite(GPS_PIN, HIGH);
+      mTime = 0;
+          
       do{ 
         while (gps_serial.available())
         {
@@ -257,7 +340,7 @@ void activationPing(){
             }
           }
         }
-      }while(!gps.location.isValid());
+      }while(mTime < 10000);
     if (gps.location.age() < 60000)
     {
       //pack data into struct
@@ -267,10 +350,10 @@ void activationPing(){
     if (gps.time.isValid())
     {
       setTime(gps.time.hour(),gps.time.minute(),gps.time.second(),gps.date.day(),gps.date.month(),gps.date.year());
-      time_t n = now();
+      mainTime = now();
     }
     digitalWrite(GPS_PIN, LOW);
-
+    
     wipe = false;
 
     px1.request = (byte)105;
@@ -348,15 +431,20 @@ void recGPS(){
       break;
     }  
   }   
-
   digitalWrite(GPS_PIN, LOW);
+
+  getMeta();
+
   struct data{
     uint32_t datetime;
     uint16_t locktime;
     float lat;
     float lng;
+    double pres;
+    float x;
+    float y;
+    float z;
     byte hdop;
-    bool act;
     }dat;
 
   if (gps.location.age() < 60000)
@@ -375,17 +463,16 @@ void recGPS(){
     dat.datetime = (uint32_t)now();
     dat.locktime = mTime/1000;
     dat.hdop = gps.hdop.hdop();
-    // if(act_mode == true){
-    //   dat.act = true;
-    // }else{
-    //   dat.act = false;
-    // }
+    dat.pres = P;
+    dat.x = x;
+    dat.y = y;
+    dat.z = z;
+
     Serial.println(dat.datetime);
     Serial.println(dat.lat);
     Serial.println(dat.lng);
     Serial.println(dat.locktime);
     Serial.println(dat.hdop);
-    Serial.println(dat.act);
 
 
   if (flash.powerUp())
@@ -418,8 +505,11 @@ void read_send(){
     uint16_t locktime;
     float lat;
     float lng;
+    double pres;
+    float x;
+    float y;
+    float z;
     byte hdop;
-    bool act;
     }dat;
 
   if (flash.powerUp())
@@ -433,7 +523,10 @@ void read_send(){
       Serial.println(dat.lat);
       Serial.println(dat.lng);
       Serial.println(dat.locktime);
-      Serial.println(dat.act);
+      Serial.println(dat.pres);
+      Serial.println(dat.y);
+      Serial.println(dat.x);
+      Serial.println(dat.z);
     }else
     {
       Serial.println(F("Read Failed"));
@@ -504,7 +597,7 @@ void receive(unsigned int time){
         {
           Serial.println("Init Stream");
           read_send();
-          rAdd = rAdd + 16;
+          rAdd = rAdd + 31;
           Serial.println(rAdd);
         
         } while (rAdd <= wAdd);
@@ -553,7 +646,7 @@ void receive(unsigned int time){
       // act_treshold = set.act_trsh;
       // act_gpsFrequency = set.act_gps_frq;
       // act_duration = set.act_duration;
-      gpsFrequency = set.gpsFrq;
+      gpsMinFrequency = set.gpsFrq;
       gpsTimeout = set.gpsTout;
       gpsHdop = set.hdop;
       radioFrequency = set.radioFrq;
@@ -616,28 +709,28 @@ void setup(){
   Serial.println(F("SYSTEM INIT..."));
 
   if (!MPR121.begin(MPR121_ADDR)) {
-    Serial.println("error setting up MPR121");
+    Serial.println(F("error setting up MPR121"));
     switch (MPR121.getError()) {
       case NO_ERROR:
-        Serial.println("no error");
+        Serial.println(F("no error"));
         break;
       case ADDRESS_UNKNOWN:
-        Serial.println("incorrect address");
+        Serial.println(F("incorrect address"));
         break;
       case READBACK_FAIL:
-        Serial.println("readback failure");
+        Serial.println(F("readback failure"));
         break;
       case OVERCURRENT_FLAG:
-        Serial.println("overcurrent on REXT pin");
+        Serial.println(F("overcurrent on REXT pin"));
         break;
       case OUT_OF_RANGE:
-        Serial.println("electrode out of range");
+        Serial.println(F("electrode out of range"));
         break;
       case NOT_INITED:
-        Serial.println("not initialised");
+        Serial.println(F("not initialised"));
         break;
       default:
-        Serial.println("unknown error");
+        Serial.println(F("unknown error"));
         break;
     }
     while (1);
@@ -670,48 +763,105 @@ void setup(){
   LoRa.sleep();
 
   // Activation Ping //
-  // activationPing();
+  activationPing();
 
   // Enable & Start Flash //
   
-  // if(flash.powerUp()){
-  //   Serial.println(F("Powered Up1"));
-  // }
-  // if(!flash.begin()){
-  //   Serial.println(F("Flash again"));
-  //   Serial.println(flash.error(VERBOSE));
-  // } 
-  // Serial.println(flash.getManID());
-  // if(flash.powerUp()){
-  //   Serial.println(F("Powered Up"));
-  // }else
-  // {
-  //   Serial.println(F("PWR UP Failed!"));
-  // }
-  // if (wipe == true)
-  // {
-  //   Serial.println(F("WIPING FLASH"));
-  //   if(flash.eraseChip()){
-  //   Serial.println(F("Memory Wiped"));  
-  //   }else
-  //   {
-  //     Serial.println(flash.error(VERBOSE));
-  //   }
-  // }else{
-  //   rAdd = flash.getAddress(16);
-  // }    
-  // if(flash.powerDown()){
-  //   Serial.println("Powered Down");
-  //   digitalWrite(1, HIGH);
-  // }else{
-  //   Serial.println(flash.error(VERBOSE));
-  // }
+  if(flash.powerUp()){
+    Serial.println(F("Powered Up1"));
+  }
+  if(!flash.begin()){
+    Serial.println(F("Flash again"));
+    Serial.println(flash.error(VERBOSE));
+  } 
+  Serial.println(flash.getManID());
+  if(flash.powerUp()){
+    Serial.println(F("Powered Up"));
+  }else
+  {
+    Serial.println(F("PWR UP Failed!"));
+  }
+  if (wipe == true)
+  {
+    Serial.println(F("WIPING FLASH"));
+    if(flash.eraseChip()){
+    Serial.println(F("Memory Wiped"));  
+    }else
+    {
+      Serial.println(flash.error(VERBOSE));
+    }
+  }else{
+    rAdd = flash.getAddress(16);
+  }    
+  if(flash.powerDown()){
+    Serial.println("Powered Down");
+    digitalWrite(1, HIGH);
+  }else{
+    Serial.println(flash.error(VERBOSE));
+  }
 
+  
+  targetCycle = gpsMinFrequency/radioFrequency;  
   // // Attach Interupt //
-  attachInterrupt(digitalPinToInterrupt(RINT), isr, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(2), isr, CHANGE);
+  delay(100);
+  sleepMode(SLEEP_POWER_DOWN);
+  sleep();
 
 }
 
 void loop(){
+  
+
+  if (isrt == true)
+  {
+    // MPR121.updateAll();
+    checkElectrodes();
+    Serial.println(E1);
+    Serial.println(E2);
+    Serial.println(E3);
+    Serial.println(E4);
+    currentCycle = targetCycle + 1;
+    isrt = false;    
+  }
+   
+  switch (surface)
+  {
+  case true: // Device on Surface//
+    if (currentCycle >= targetCycle)
+    {
+      recGPS();
+      currentCycle = 0;
+    }
+    mTime = 0;
+    Ping(lat,lng,tag, cnt, devType);
+    receive(5000);
+    currentCycle = currentCycle + 1;
+    Serial.print(F("CCYC : ")); Serial.println(currentCycle);
+    checkElectrodes();
+    MPR121.updateTouchData();
+    MPR121.updateBaselineData();
+    Serial.println(MPR121.getFilteredData(2));
+    delay(100);
+    slp.pwrDownMode();
+    slp.sleepDelay(radioFrequency*60000 - mTime);
+
+    break;
+  
+  case false: // Device is submerged //
+
+    MPR121.updateTouchData();
+    MPR121.updateBaselineData();
+    Serial.println(MPR121.getFilteredData(2));
+    Serial.println(F("SLP"));
+    attachInterrupt(digitalPinToInterrupt(2), isr, CHANGE);
+    delay(100);
+    sleepMode(SLEEP_POWER_DOWN);
+    sleep();
+    break;
+
+  default:
+    break;
+  }
 }
 
