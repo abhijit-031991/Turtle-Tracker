@@ -315,10 +315,8 @@ void activationPing(){
     Serial.println(EEPROM.read(1));
      /// Begin GPS and Acquire Lock ////
     digitalWrite(GPS_PIN, HIGH);
-      mTime = 0;
-          
       do{ 
-        while (gps_serial.available())
+        while (gps_serial.available() > 0)
         {
           if (gps.encode(gps_serial.read()))
           {
@@ -340,7 +338,7 @@ void activationPing(){
             }
           }
         }
-      }while(mTime < 10000);
+      }while(!gps.location.isValid());
     if (gps.location.age() < 60000)
     {
       //pack data into struct
@@ -352,6 +350,7 @@ void activationPing(){
       setTime(gps.time.hour(),gps.time.minute(),gps.time.second(),gps.date.day(),gps.date.month(),gps.date.year());
       mainTime = now();
     }
+    
     digitalWrite(GPS_PIN, LOW);
     
     wipe = false;
@@ -518,6 +517,7 @@ void read_send(){
     {
       // dat.id = tag;
       Serial.println(F("Read Successful"));
+      Serial.println(rAdd);
       Serial.println(dat.datetime);
       Serial.println(dat.hdop);
       Serial.println(dat.lat);
@@ -758,7 +758,7 @@ void setup(){
     Serial.println(F("LoRa Failed Init"));
   }
   LoRa.setTxPower(20, PA_OUTPUT_PA_BOOST_PIN);
-  LoRa.setSpreadingFactor(12);
+  LoRa.setSpreadingFactor(7);
   // LoRa.setSignalBandwidth(62.5E3);
   LoRa.sleep();
 
@@ -812,6 +812,11 @@ void setup(){
 
 void loop(){
   
+  enablePower(POWER_ADC);
+  enablePower(POWER_SERIAL0);
+  enablePower(POWER_SERIAL1);
+  enablePower(POWER_SPI);
+  enablePower(POWER_WIRE);
 
   if (isrt == true)
   {
@@ -843,6 +848,13 @@ void loop(){
     MPR121.updateBaselineData();
     Serial.println(MPR121.getFilteredData(2));
     delay(100);
+
+    disablePower(POWER_ADC);
+    disablePower(POWER_SERIAL0);
+    disablePower(POWER_SERIAL1);
+    disablePower(POWER_SPI);
+    disablePower(POWER_WIRE); 
+
     slp.pwrDownMode();
     slp.sleepDelay(radioFrequency*60000 - mTime);
 
@@ -856,6 +868,11 @@ void loop(){
     Serial.println(F("SLP"));
     attachInterrupt(digitalPinToInterrupt(2), isr, CHANGE);
     delay(100);
+    disablePower(POWER_ADC);
+    disablePower(POWER_SERIAL0);
+    disablePower(POWER_SERIAL1);
+    disablePower(POWER_SPI);
+    disablePower(POWER_WIRE); 
     sleepMode(SLEEP_POWER_DOWN);
     sleep();
     break;
